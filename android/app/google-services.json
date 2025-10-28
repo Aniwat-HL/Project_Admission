@@ -1,0 +1,46 @@
+{
+  "project_info": {
+    "project_number": "1067350563771",
+    "project_id": "admission-app-eaef0",
+    "storage_bucket": "admission-app-eaef0.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1067350563771:android:706a854bab503dca50429e",
+        "android_client_info": {
+          "package_name": "com.example.admission_app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1067350563771-ngi4p2fefdkm0ptk4qedeq00k6moncac.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCRKRnxGQltgZkyHoCQ8-jAllPou8wtdCo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1067350563771-ngi4p2fefdkm0ptk4qedeq00k6moncac.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "1067350563771-3iqknr196hq2i7sb5ml50ecgj0jksci1.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.admissionApp"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
