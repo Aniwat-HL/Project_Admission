@@ -19,9 +19,11 @@ class FirestoreService {
         .collection('courses')
         .where('isOpen', isEqualTo: true)
         .snapshots()
-        .map((snap) => snap.docs
-            .map((d) => Course.fromMap(d.id, d.data()))
-            .toList());
+        .map(
+          (snap) => snap.docs
+              .map((d) => Course.fromMap(d.id, d.data()))
+              .toList(),
+        );
   }
 
   Future<Course?> getCourse(String courseId) async {
@@ -36,46 +38,44 @@ class FirestoreService {
 
   /// นักเรียนกดส่งใบสมัคร
   /// - status เริ่มต้น = pending_docs
-  /// - เก็บ coursePrice (snapshot ราคาตอนสมัคร) เฉย ๆ
+  /// - เก็บ coursePrice (snapshot ราคาตอนสมัคร)
   /// - ยังไม่ใช่รายได้จริงจนกว่า admin อนุมัติ
   Future<void> submitApplication({
-  required String uid,
-  required String courseId,
-  required String courseName,
-  required Map<String, dynamic> studentInfo,
-  required double coursePriceNow, // <- ราคาคอร์สตอนสมัคร
-}) async {
-  await _db.collection('applications').add({
-    'uid': uid,
-    'courseId': courseId,
-    'courseName': courseName,
-    'studentInfo': studentInfo,
+    required String uid,
+    required String courseId,
+    required String courseName,
+    required Map<String, dynamic> studentInfo,
+    required double coursePriceNow, // ราคาคอร์สตอนสมัคร
+  }) async {
+    await _db.collection('applications').add({
+      'uid': uid,
+      'courseId': courseId,
+      'courseName': courseName,
+      'studentInfo': studentInfo,
 
-    'status': 'pending_docs',
-    'submittedAtMs': DateTime.now().millisecondsSinceEpoch,
-    'paymentProofUrl': '',
+      'status': 'pending_docs',
+      'submittedAtMs': DateTime.now().millisecondsSinceEpoch,
+      'paymentProofUrl': '',
 
-    // 👇 สำคัญ ๆ
-    'coursePrice': coursePriceNow,
+      // เก็บ snapshot ราคา ณ ตอนสมัคร
+      'coursePrice': coursePriceNow,
 
-    // ยังไม่ล็อกเป็นรายได้จนกว่าอนุมัติ
-    // 'priceAtSubmit': ...
-  });
-}
-  
+      // ยังไม่ล็อกเป็นรายได้จนกว่าอนุมัติ
+      // 'priceAtSubmit': ...
+    });
+  }
 
-
+  /// แอดมินกดอนุมัติ -> ล็อกยอดเข้า priceAtSubmit
   Future<void> approveApplicationAndSetPrice({
-  required String appId,
-  required double priceAtSubmit,
-}) async {
-  await _db.collection('applications').doc(appId).update({
-    'status': 'approved',
-    'priceAtSubmit': priceAtSubmit,
-    'approvedAtMs': DateTime.now().millisecondsSinceEpoch,
-  });
-}
-
+    required String appId,
+    required double priceAtSubmit,
+  }) async {
+    await _db.collection('applications').doc(appId).update({
+      'status': 'approved',
+      'priceAtSubmit': priceAtSubmit,
+      'approvedAtMs': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
 
   /// นักเรียนดูใบสมัครของตัวเอง
   Stream<List<ApplicationRecord>> watchMyApplications(String uid) {
@@ -84,9 +84,11 @@ class FirestoreService {
         .where('uid', isEqualTo: uid)
         .orderBy('submittedAtMs', descending: true)
         .snapshots()
-        .map((snap) => snap.docs
-            .map((d) => ApplicationRecord.fromMap(d.id, d.data()))
-            .toList());
+        .map(
+          (snap) => snap.docs
+              .map((d) => ApplicationRecord.fromMap(d.id, d.data()))
+              .toList(),
+        );
   }
 
   /// แนบหลักฐานโอน (อัปเดตเอกสารใบสมัคร)
@@ -97,6 +99,20 @@ class FirestoreService {
     await _db.collection('applications').doc(applicationId).update({
       'paymentProofUrl': proofUrl,
       'status': 'waiting_verify',
+    });
+  }
+
+  /// ดูข้อมูลใบสมัครเดียวแบบ realtime (ใช้ในหน้า AdminApplicationDetailPage)
+  Stream<ApplicationRecord?> watchSingleApplication(String appId) {
+    return _db
+        .collection('applications')
+        .doc(appId)
+        .snapshots()
+        .map((docSnap) {
+      if (!docSnap.exists) return null;
+      final data = docSnap.data();
+      if (data == null) return null;
+      return ApplicationRecord.fromMap(docSnap.id, data);
     });
   }
 
@@ -112,9 +128,11 @@ class FirestoreService {
         .collection('messages')
         .orderBy('createdAt', descending: false)
         .snapshots()
-        .map((snap) => snap.docs
-            .map((d) => ChatMessage.fromMap(d.id, d.data()))
-            .toList());
+        .map(
+          (snap) => snap.docs
+              .map((d) => ChatMessage.fromMap(d.id, d.data()))
+              .toList(),
+        );
   }
 
   /// แอดมินดูห้องของนักเรียน
@@ -125,9 +143,31 @@ class FirestoreService {
         .collection('messages')
         .orderBy('createdAt', descending: false)
         .snapshots()
-        .map((snap) => snap.docs
-            .map((d) => ChatMessage.fromMap(d.id, d.data()))
-            .toList());
+        .map(
+          (snap) => snap.docs
+              .map((d) => ChatMessage.fromMap(d.id, d.data()))
+              .toList(),
+        );
+  }
+
+  /// ✅ ฟัง metadata ของห้อง เช่น typing / lastSeen / updatedAt
+  /// chats/{roomUserUid} document
+  ///
+  /// field ที่เราจะใช้:
+  /// - typing_student : bool
+  /// - typing_admin   : bool
+  /// - lastSeenByStudent : Timestamp
+  /// - lastSeenByAdmin   : Timestamp
+  /// - lastMessage / updatedAt ... (ของเดิม)
+  Stream<Map<String, dynamic>?> watchChatRoomMeta(String roomUserUid) {
+    return _db
+        .collection('chats')
+        .doc(roomUserUid)
+        .snapshots()
+        .map((docSnap) {
+      if (!docSnap.exists) return null;
+      return docSnap.data();
+    });
   }
 
   // ======================
@@ -147,12 +187,14 @@ class FirestoreService {
       final now = FieldValue.serverTimestamp();
       final chatRef = _db.collection('chats').doc(studentUid);
 
+      // อัปเดตหัวห้อง
       await chatRef.set({
         'lastMessage': trimmed,
         'updatedAt': now,
         'role': 'student',
       }, SetOptions(merge: true));
 
+      // เพิ่มแชทใหม่
       await chatRef.collection('messages').add({
         'senderUid': studentUid,
         'senderName': studentName,
@@ -161,6 +203,9 @@ class FirestoreService {
         'text': trimmed,
         'imageBase64': null,
         'createdAt': now,
+
+        // reactions เริ่มต้นเป็น map ว่าง
+        'reactions': {},
       });
 
       return null;
@@ -197,6 +242,9 @@ class FirestoreService {
         'text': trimmed,
         'imageBase64': null,
         'createdAt': now,
+
+        // reactions เริ่มต้นเป็น map ว่าง
+        'reactions': {},
       });
 
       return null;
@@ -206,7 +254,7 @@ class FirestoreService {
   }
 
   // ======================
-  // CHAT send: image (เช่นสลิป)
+  // CHAT send: image (เช่นสลิป/หลักฐาน)
   // ======================
 
   Future<String?> sendImageFromStudent({
@@ -236,6 +284,9 @@ class FirestoreService {
         'text': null,
         'imageBase64': b64,
         'createdAt': now,
+
+        // reactions เริ่มต้นเป็น map ว่าง
+        'reactions': {},
       });
 
       return null;
@@ -245,20 +296,87 @@ class FirestoreService {
   }
 
   // ======================
+  // CHAT reactions
+  // ======================
+
+  /// อัปเดต reactions ของ message นั้น ๆ
+  ///
+  /// reactionsMap format:
+  /// {
+  ///   "👍": ["uid1","uid2"],
+  ///   "❤️": ["uid3"]
+  /// }
+  Future<void> updateMessageReactions({
+    required String roomUserUid,
+    required String messageId,
+    required Map<String, List<String>> reactionsMap,
+  }) async {
+    // Firestore ต้องการ Map<String, dynamic> ที่ value เป็น List<dynamic>
+    final conv = <String, dynamic>{};
+    reactionsMap.forEach((emoji, uidList) {
+      conv[emoji] = uidList;
+    });
+
+    await _db
+        .collection('chats')
+        .doc(roomUserUid)
+        .collection('messages')
+        .doc(messageId)
+        .update({
+      'reactions': conv,
+    });
+  }
+
+  // ======================
+  // CHAT typing / seen status
+  // ======================
+
+  /// อัปเดตสถานะกำลังพิมพ์ของคนที่ใช้งานอยู่
+  /// isAdmin = true  -> อัปเดต typing_admin
+  /// isAdmin = false -> อัปเดต typing_student
+  Future<void> setTypingStatus({
+    required String roomUserUid,
+    required bool isAdmin,
+    required bool typing,
+  }) async {
+    await _db.collection('chats').doc(roomUserUid).set(
+      isAdmin
+          ? {'typing_admin': typing}
+          : {'typing_student': typing},
+      SetOptions(merge: true),
+    );
+  }
+
+  /// อัปเดต lastSeen ของฝั่งที่เปิดจอดู
+  /// - ถ้าแอดมินกำลังดูห้องของนักเรียน -> lastSeenByAdmin = now
+  /// - ถ้านักเรียนกำลังดูห้องของตัวเอง -> lastSeenByStudent = now
+  Future<void> markRoomSeen({
+    required String roomUserUid,
+    required bool isAdminViewer,
+  }) async {
+    await _db.collection('chats').doc(roomUserUid).set(
+      isAdminViewer
+          ? {'lastSeenByAdmin': FieldValue.serverTimestamp()}
+          : {'lastSeenByStudent': FieldValue.serverTimestamp()},
+      SetOptions(merge: true),
+    );
+  }
+
+  // ======================
   // CHAT DELETE HELPERS
   // ======================
 
+  /// ลบข้อความเดี่ยว
   Future<void> deleteSingleMessage({
     required String roomUserUid,
     required String messageId,
   }) async {
     final roomRef = _db.collection('chats').doc(roomUserUid);
 
-    await roomRef
-        .collection('messages')
-        .doc(messageId)
-        .delete();
+    // ลบข้อความ
+    await roomRef.collection('messages').doc(messageId).delete();
 
+    // อัปเดต lastMessage ใหม่แบบง่าย ๆ
     final latestSnap = await roomRef
         .collection('messages')
         .orderBy('createdAt', descending: true)
@@ -279,9 +397,11 @@ class FirestoreService {
     }
   }
 
+  /// ลบห้องทั้งห้อง (ข้อความทั้งหมด)
   Future<void> deleteWholeChatRoom({required String userUid}) async {
     final roomRef = _db.collection('chats').doc(userUid);
 
+    // ลบทุกข้อความใน subcollection
     final msgs = await roomRef.collection('messages').get();
     final batch = _db.batch();
     for (final m in msgs.docs) {
@@ -289,6 +409,7 @@ class FirestoreService {
     }
     await batch.commit();
 
+    // ลบตัวห้อง
     await roomRef.delete();
   }
 
@@ -296,6 +417,8 @@ class FirestoreService {
   // ADMIN inbox list
   // ======================
 
+  /// รายการห้องแชททั้งหมดสำหรับ Admin Inbox
+  /// (รวมชื่อ user และ lastMessage)
   Stream<List<Map<String, dynamic>>> watchAllChatRoomsForAdmin() async* {
     final snapStream = _db
         .collection('chats')
@@ -335,9 +458,11 @@ class FirestoreService {
         .collection('courses')
         .orderBy('createdAt', descending: true)
         .snapshots()
-        .map((snap) => snap.docs
-            .map((d) => Course.fromMap(d.id, d.data()))
-            .toList());
+        .map(
+          (snap) => snap.docs
+              .map((d) => Course.fromMap(d.id, d.data()))
+              .toList(),
+        );
   }
 
   Future<void> createCourse({
@@ -374,6 +499,7 @@ class FirestoreService {
       'startTime': startTimeStr,
       'endTime': endTimeStr,
 
+      // fallback fields (เผื่อโค้ดเก่าอ่าน)
       'name': title,
       'open': isOpen,
       'thumbnailUrl': null,
@@ -415,6 +541,7 @@ class FirestoreService {
       'startTime': startTimeStr,
       'endTime': endTimeStr,
 
+      // fallback update
       'name': title,
       'open': isOpen,
     });
@@ -438,16 +565,20 @@ class FirestoreService {
   // ADMIN: APPLICATIONS
   // ======================
 
+  /// ใบสมัครทั้งหมด (admin dashboard)
   Stream<List<ApplicationRecord>> watchAllApplicationsForAdmin() {
     return _db
         .collection('applications')
         .orderBy('submittedAtMs', descending: true)
         .snapshots()
-        .map((snap) => snap.docs
-            .map((d) => ApplicationRecord.fromMap(d.id, d.data()))
-            .toList());
+        .map(
+          (snap) => snap.docs
+              .map((d) => ApplicationRecord.fromMap(d.id, d.data()))
+              .toList(),
+        );
   }
 
+  /// ใบสมัครทั้งหมด (อาจกรองตาม courseId)
   Stream<List<ApplicationRecord>> watchAllApplicationsForAdminFiltered({
     String? courseIdFilter,
   }) {
@@ -459,9 +590,11 @@ class FirestoreService {
       q = q.where('courseId', isEqualTo: courseIdFilter);
     }
 
-    return q.snapshots().map((snap) => snap.docs
-        .map((d) => ApplicationRecord.fromMap(d.id, d.data()))
-        .toList());
+    return q.snapshots().map(
+          (snap) => snap.docs
+              .map((d) => ApplicationRecord.fromMap(d.id, d.data()))
+              .toList(),
+        );
   }
 
   Future<void> updateApplicationStatus({
@@ -481,6 +614,7 @@ class FirestoreService {
   // USER PROFILE HELPERS / STATS
   // ======================
 
+  /// ดึง displayName ของ user เพื่อนำไปโชว์บนหน้าต่างแชท admin
   Future<String> getUserDisplayName(String uid) async {
     try {
       final doc = await _db.collection('users').doc(uid).get();
@@ -496,6 +630,7 @@ class FirestoreService {
     }
   }
 
+  /// นับจำนวนผู้ใช้ role=student
   Stream<int> watchTotalUsers() {
     return _db
         .collection('users')
@@ -504,6 +639,7 @@ class FirestoreService {
         .map((snap) => snap.docs.length);
   }
 
+  /// นับจำนวนผู้สมัครของคอร์สนี้
   Stream<int> watchApplicantsCountForCourse(String courseId) {
     return _db
         .collection('applications')
@@ -530,23 +666,4 @@ class FirestoreService {
       return sum;
     });
   }
-
-// ใน class FirestoreService (ข้างในไฟล์ firestore_service.dart)
-// วางไว้ตรงไหนก็ได้ในคลาส FirestoreService เช่นใต้ approveApplicationAndSetPrice()
-
-Stream<ApplicationRecord?> watchSingleApplication(String appId) {
-  return _db
-      .collection('applications')
-      .doc(appId)
-      .snapshots()
-      .map((docSnap) {
-    if (!docSnap.exists) {
-      return null;
-    }
-    final data = docSnap.data();
-    if (data == null) return null;
-    return ApplicationRecord.fromMap(docSnap.id, data);
-  });
-}
-
 }
