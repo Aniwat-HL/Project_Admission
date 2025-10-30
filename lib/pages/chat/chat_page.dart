@@ -1,6 +1,4 @@
-import 'dart:async';
 import 'dart:ui' as ui;
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -15,8 +13,15 @@ class ChatPage extends StatefulWidget {
     required this.isAdminView,
   });
 
-  final String targetUserUid; // ห้องนี้เป็นของนักเรียน uid นี้
-  final bool isAdminView;     // true = admin กำลังดูห้องของเด็ก
+  /// student ปกติ:
+  ///   targetUserUid = currentUser.uid
+  ///   isAdminView = false
+  ///
+  /// admin ดูห้องของนักเรียน:
+  ///   targetUserUid = uid นักเรียน
+  ///   isAdminView = true
+  final String targetUserUid;
+  final bool isAdminView;
 
   @override
   State<ChatPage> createState() => _ChatPageState();
@@ -31,13 +36,7 @@ class _ChatPageState extends State<ChatPage> {
 
   String _chatTitle = "แชท";
 
-  // typing indicator debounce
-  Timer? _typingTimer;
-  bool _iAmCurrentlyTyping = false;
-
-  // room meta we listen (typing / lastSeen...)
-  Map<String, dynamic>? _roomMeta;
-
+  // theme tokens
   static const Color bgChat = Color(0xFFF5F7FA);
   static const Color myBubbleStart = Color(0xFF2563EB);
   static const Color myBubbleEnd = Color(0xFF1E40AF);
@@ -49,17 +48,6 @@ class _ChatPageState extends State<ChatPage> {
   void initState() {
     super.initState();
     _initTitle();
-    _startListenRoomMeta();
-    _markSeen(); // mark seen ทันทีที่เข้า
-  }
-
-  @override
-  void dispose() {
-    _msgCtl.dispose();
-    _typingTimer?.cancel();
-    // เมื่อออกจากหน้าจอ เราจะ set typing=false ให้ตัวเอง
-    _setTyping(false);
-    super.dispose();
   }
 
   Future<void> _initTitle() async {
@@ -69,6 +57,7 @@ class _ChatPageState extends State<ChatPage> {
       });
       return;
     }
+
     final name = await _fs.getUserDisplayName(widget.targetUserUid);
     if (!mounted) return;
     setState(() {
@@ -76,51 +65,13 @@ class _ChatPageState extends State<ChatPage> {
     });
   }
 
-  void _startListenRoomMeta() {
-    _fs.watchChatRoomMeta(widget.targetUserUid).listen((data) {
-      if (!mounted) return;
-      setState(() {
-        _roomMeta = data;
-      });
-      // เมื่อมีอัปเดต meta (เช่นเราเปิดจอ) เราก็ถือว่าเราเห็นข้อความล่าสุดแล้ว
-      _markSeen();
-    });
+  @override
+  void dispose() {
+    _msgCtl.dispose();
+    super.dispose();
   }
 
-  Future<void> _markSeen() async {
-    // mark ว่าเราเห็นแล้ว (update lastSeenByX)
-    await _fs.markRoomSeen(
-      roomUserUid: widget.targetUserUid,
-      isAdminViewer: widget.isAdminView,
-    );
-  }
-
-  // ---------- typing logic ----------
-  void _onUserTypingChanged(String _) {
-    // ถูกเรียกทุกครั้งที่ user พิมพ์ใน TextField
-    // เราจะ set typing=true (ถ้ายังไม่ได้เป็น true)
-    _setTyping(true);
-
-    // แล้วตั้ง timer ถ้า 2 วินาทีเงียบ ให้ typing=false
-    _typingTimer?.cancel();
-    _typingTimer = Timer(const Duration(seconds: 2), () {
-      _setTyping(false);
-    });
-  }
-
-  Future<void> _setTyping(bool typing) async {
-    // ถ้าสถานะไม่มีเปลี่ยนก็ไม่ยิงไป firestore ลด write
-    if (_iAmCurrentlyTyping == typing) return;
-    _iAmCurrentlyTyping = typing;
-
-    await _fs.setTypingStatus(
-      roomUserUid: widget.targetUserUid,
-      isAdmin: widget.isAdminView,
-      typing: typing,
-    );
-  }
-
-  // ---------- send text ----------
+  // ส่งข้อความตัวอักษร
   Future<void> _handleSendText() async {
     final txt = _msgCtl.text.trim();
     if (txt.isEmpty) return;
@@ -132,6 +83,7 @@ class _ChatPageState extends State<ChatPage> {
     });
 
     String? err;
+
     if (widget.isAdminView) {
       final adminUser = FirebaseAuth.instance.currentUser;
       if (adminUser == null) {
@@ -166,15 +118,9 @@ class _ChatPageState extends State<ChatPage> {
         errorMsg = err;
       }
     });
-
-    // หลังส่งข้อความ ให้ mark ว่าเราไม่กำลังพิมพ์แล้ว
-    _setTyping(false);
-
-    // และอัปเดตว่าเราเห็นห้อง (กันเคส unread ค้างฝั่งเราเอง)
-    _markSeen();
   }
 
-  // ---------- send image (student only) ----------
+  // ส่งรูป (นักเรียนเท่านั้น)
   Future<void> _handleSendImage() async {
     if (widget.isAdminView) return;
 
@@ -221,12 +167,9 @@ class _ChatPageState extends State<ChatPage> {
         errorMsg = err;
       }
     });
-
-    _setTyping(false);
-    _markSeen();
   }
 
-  // ---------- delete message ----------
+  // ลบข้อความ (เฉพาะของตัวเอง)
   Future<void> _confirmDeleteMessage(ChatMessage m, bool isMe) async {
     if (!isMe) return;
 
@@ -261,12 +204,13 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
-  // ---------- reactions ----------
+  // toggle reaction
   Future<void> _toggleReaction(ChatMessage m, String emoji) async {
     final me = FirebaseAuth.instance.currentUser;
     if (me == null) return;
     final uid = me.uid;
 
+    // clone reactions ปัจจุบัน (หรือ map ว่างถ้าไม่มี)
     final current = m.reactions;
     final newReactions = <String, List<String>>{};
     current.forEach((k, v) {
@@ -274,10 +218,11 @@ class _ChatPageState extends State<ChatPage> {
     });
 
     final list = List<String>.from(newReactions[emoji] ?? []);
+
     if (list.contains(uid)) {
-      list.remove(uid);
+      list.remove(uid); // un-react
     } else {
-      list.add(uid);
+      list.add(uid); // react
     }
 
     if (list.isEmpty) {
@@ -289,10 +234,11 @@ class _ChatPageState extends State<ChatPage> {
     await _fs.updateMessageReactions(
       roomUserUid: widget.targetUserUid,
       messageId: m.id,
-      reactionsMap: newReactions,
+      reactionsMap: newReactions, // 👈 ชื่อ param ต้อง reactionsMap
     );
   }
 
+  // bottom sheet reactions + delete
   Future<void> _onLongPressMessage(ChatMessage m, bool isMe) async {
     final emojiList = ["👍","❤️","😂","😮","😢","🔥"];
 
@@ -308,6 +254,8 @@ class _ChatPageState extends State<ChatPage> {
             mainAxisSize: MainAxisSize.min,
             children: [
               const SizedBox(height: 12),
+
+              // แถวเลือก emoji
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: emojiList.map((e) {
@@ -323,8 +271,10 @@ class _ChatPageState extends State<ChatPage> {
                   );
                 }).toList(),
               ),
+
               const SizedBox(height: 16),
               const Divider(height: 1),
+
               if (isMe)
                 ListTile(
                   leading: const Icon(Icons.delete_outline, color: Colors.red),
@@ -344,25 +294,7 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
-  // ---------- read receipt helper ----------
-  // คืน true ถ้า "ฝั่งตรงข้าม" เห็นข้อความนี้แล้ว
-  bool _isMessageSeenByOther(ChatMessage myMsg, Map<String, dynamic>? meta) {
-    if (meta == null) return false;
-    // กำหนดว่าใครคือ 'other'
-    // ถ้าเราเป็น admin -> other = student -> lastSeenByStudent
-    // ถ้าเราเป็น student -> other = admin -> lastSeenByAdmin
-    final otherSeenField =
-        widget.isAdminView ? 'lastSeenByStudent' : 'lastSeenByAdmin';
-
-    final rawTs = meta[otherSeenField];
-    if (rawTs is Timestamp && myMsg.createdAt != null) {
-      final seenAt = rawTs.toDate();
-      return !seenAt.isBefore(myMsg.createdAt!);
-    }
-    return false;
-  }
-
-  // ---------- reactions bar ----------
+  // reactions bar ใต้ bubble
   Widget _buildReactionsBar(ChatMessage m, bool isMe) {
     if (m.reactions.isEmpty) {
       return const SizedBox.shrink();
@@ -401,7 +333,10 @@ class _ChatPageState extends State<ChatPage> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(emoji, style: const TextStyle(fontSize: 14)),
+                Text(
+                  emoji,
+                  style: const TextStyle(fontSize: 14),
+                ),
                 const SizedBox(width: 2),
                 Text(
                   "$count",
@@ -419,13 +354,8 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
-  // ---------- single bubble (with "อ่านแล้ว" ใต้ last bubble ของฉัน) ----------
-  Widget _buildBubble(
-    ChatMessage m,
-    bool isMe,
-    bool showName,
-    bool isLastMyMessage,
-  ) {
+  // bubble UI
+  Widget _buildBubble(ChatMessage m, bool isMe, bool showName) {
     final isImage = (m.type == 'image' && m.imageBase64 != null);
     final imgProvider = m.asImageProvider();
 
@@ -461,7 +391,9 @@ class _ChatPageState extends State<ChatPage> {
               bottomRight: Radius.circular(14),
               bottomLeft: Radius.circular(4),
             ),
-            border: Border.all(color: Colors.black.withOpacity(0.05)),
+            border: Border.all(
+              color: Colors.black.withOpacity(0.05),
+            ),
             boxShadow: [
               BoxShadow(
                 color: Colors.black.withOpacity(0.05),
@@ -472,8 +404,16 @@ class _ChatPageState extends State<ChatPage> {
           );
 
     final textStyle = isMe
-        ? const TextStyle(fontSize: 15, color: Colors.white, height: 1.4)
-        : const TextStyle(fontSize: 15, color: textDark, height: 1.4);
+        ? const TextStyle(
+            fontSize: 15,
+            color: Colors.white,
+            height: 1.4,
+          )
+        : const TextStyle(
+            fontSize: 15,
+            color: textDark,
+            height: 1.4,
+          );
 
     final nameStyle = TextStyle(
       fontWeight: FontWeight.w600,
@@ -481,10 +421,6 @@ class _ChatPageState extends State<ChatPage> {
       color: isMe ? Colors.white70 : textMute,
       height: 1.3,
     );
-
-    // ตัดสิน read receipt
-    final bool seenByOther =
-        isMe && isLastMyMessage && _isMessageSeenByOther(m, _roomMeta);
 
     return Align(
       alignment: align,
@@ -500,7 +436,7 @@ class _ChatPageState extends State<ChatPage> {
               crossAxisAlignment:
                   isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
               children: [
-                // main bubble
+                // bubble content
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: boxDeco,
@@ -526,32 +462,8 @@ class _ChatPageState extends State<ChatPage> {
                   ),
                 ),
 
-                // reactions
+                // reactions bar
                 _buildReactionsBar(m, isMe),
-
-                // seen / delivered (เฉพาะ bubble สุดท้ายของฉัน)
-                if (seenByOther)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2),
-                    child: Text(
-                      "อ่านแล้ว",
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: isMe ? Colors.black54 : Colors.black45,
-                      ),
-                    ),
-                  )
-                else if (isMe && isLastMyMessage)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2),
-                    child: Text(
-                      "ส่งแล้ว",
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: isMe ? Colors.black38 : Colors.black38,
-                      ),
-                    ),
-                  ),
               ],
             ),
           ),
@@ -560,47 +472,7 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
-  // ---------- typing indicator row (ใต้ message list, เหนือ input) ----------
-  Widget _buildTypingIndicator() {
-    // เราจะโชว์เฉพาะ "อีกฝั่งกำลังพิมพ์"
-    final bool otherTyping = widget.isAdminView
-        ? (_roomMeta?['typing_student'] == true)
-        : (_roomMeta?['typing_admin'] == true);
-
-    if (!otherTyping) return const SizedBox.shrink();
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-      child: Align(
-        alignment: Alignment.centerLeft,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.black.withOpacity(0.05)),
-            boxShadow: [
-              BoxShadow(
-                blurRadius: 8,
-                offset: const Offset(0, 4),
-                color: Colors.black.withOpacity(.05),
-              ),
-            ],
-          ),
-          child: const Text(
-            "กำลังพิมพ์...",
-            style: TextStyle(
-              fontSize: 12,
-              color: textMute,
-              height: 1.3,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  // ---------- input area ----------
+  // แถวป้อนข้อความ + ปุ่มส่ง
   Widget _buildInputArea() {
     final canSend = _msgCtl.text.trim().isNotEmpty && !sending;
 
@@ -612,7 +484,8 @@ class _ChatPageState extends State<ChatPage> {
         child: BackdropFilter(
           filter: ui.ImageFilter.blur(sigmaX: 12, sigmaY: 12),
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             decoration: BoxDecoration(
               color: Colors.white.withOpacity(0.9),
               borderRadius: BorderRadius.circular(16),
@@ -629,6 +502,7 @@ class _ChatPageState extends State<ChatPage> {
             ),
             child: Row(
               children: [
+                // แนบรูป (เฉพาะนักเรียน)
                 if (!widget.isAdminView) ...[
                   IconButton(
                     onPressed: sending ? null : _handleSendImage,
@@ -639,10 +513,13 @@ class _ChatPageState extends State<ChatPage> {
                   const SizedBox(width: 4),
                 ],
 
+                // กล่องข้อความ
                 Expanded(
                   child: TextField(
                     controller: _msgCtl,
-                    onChanged: _onUserTypingChanged,
+                    onChanged: (_) {
+                      setState(() {});
+                    },
                     minLines: 1,
                     maxLines: 4,
                     decoration: InputDecoration(
@@ -681,6 +558,7 @@ class _ChatPageState extends State<ChatPage> {
                 ),
                 const SizedBox(width: 8),
 
+                // ปุ่มส่ง
                 InkWell(
                   onTap: canSend ? _handleSendText : null,
                   borderRadius: BorderRadius.circular(24),
@@ -734,16 +612,7 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
-  // ---------- header ----------
   PreferredSizeWidget _buildHeader() {
-    final bool otherTyping = widget.isAdminView
-        ? (_roomMeta?['typing_student'] == true)
-        : (_roomMeta?['typing_admin'] == true);
-
-    final subtitleText = otherTyping
-        ? "กำลังพิมพ์..."
-        : (widget.isAdminView ? "ห้องนักเรียน" : "ตอบโดยเจ้าหน้าที่");
-
     return AppBar(
       backgroundColor: Colors.white,
       elevation: 0,
@@ -753,6 +622,7 @@ class _ChatPageState extends State<ChatPage> {
       titleSpacing: 16,
       title: Row(
         children: [
+          // avatar-ish
           Container(
             width: 40,
             height: 40,
@@ -767,6 +637,7 @@ class _ChatPageState extends State<ChatPage> {
             ),
           ),
           const SizedBox(width: 12),
+          // title + subtitle
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -783,9 +654,7 @@ class _ChatPageState extends State<ChatPage> {
                   ),
                 ),
                 Text(
-                  subtitleText,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                  widget.isAdminView ? "ห้องนักเรียน" : "ตอบโดยเจ้าหน้าที่",
                   style: const TextStyle(
                     fontSize: 12,
                     color: textMute,
@@ -868,58 +737,36 @@ class _ChatPageState extends State<ChatPage> {
                   );
                 }
 
-                // หาข้อความสุดท้ายที่ "ฉัน" เป็นคนส่ง
-                final meIsAdmin = widget.isAdminView;
-                int lastMyIndex = -1;
-                for (int i = msgs.length - 1; i >= 0; i--) {
-                  final mm = msgs[i];
-                  final bool isMe = meIsAdmin
-                      ? (mm.senderRole == 'admin')
-                      : (mm.senderRole == 'student');
-                  if (isMe) {
-                    lastMyIndex = i;
-                    break;
-                  }
-                }
-
                 return ListView.builder(
                   padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
                   itemCount: msgs.length,
                   itemBuilder: (context, i) {
                     final m = msgs[i];
 
-                    final bool isMe = meIsAdmin
+                    // ใครคือ "ฉัน"
+                    final bool isMe = widget.isAdminView
                         ? (m.senderRole == 'admin')
                         : (m.senderRole == 'student');
 
+                    // ถ้า admin ก็ดูชื่อเด็ก
                     final bool showName = widget.isAdminView ? !isMe : false;
 
-                    final bool isLastMyMessage = (i == lastMyIndex);
-
-                    return _buildBubble(
-                      m,
-                      isMe,
-                      showName,
-                      isLastMyMessage,
-                    );
+                    return _buildBubble(m, isMe, showName);
                   },
                 );
               },
             ),
           ),
 
-          // typing indicator ("อีกฝั่งกำลังพิมพ์...")
-          _buildTypingIndicator(),
-
-          // error bar ด้านบน input
+          // แถบ error ด้านบน input
           if (errorMsg != null)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Container(
                 width: double.infinity,
                 margin: const EdgeInsets.only(bottom: 4),
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 decoration: BoxDecoration(
                   color: Colors.red.withOpacity(.08),
                   borderRadius: BorderRadius.circular(8),
